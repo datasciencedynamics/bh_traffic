@@ -1,0 +1,5 @@
+#!/bin/sh
+command -v nbstripout >/dev/null 2>&1 || exit 0
+git diff --cached --name-only --diff-filter=ACM | grep '\.ipynb$' | while read -r f; do
+  nbstripout "$f" && git add "$f"
+done
