@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="https://raw.githubusercontent.com/datasciencedynamics/datasciencedynamics.github.io/refs/heads/main/data_science_dynamics_logo.svg" alt="Data Science Dynamics" width="250"/>
+  <img src="https://raw.githubusercontent.com/datasciencedynamics/datasciencedynamics.github.io/refs/heads/main/Astro/public/data_science_dynamics_logo.svg" alt="Data Science Dynamics" width="250"/>
 </p>
 
 # Beverly Hills Collision Injury Prediction
