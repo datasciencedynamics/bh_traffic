@@ -302,7 +302,7 @@ def run(
     labels_path: Path = typer.Option(
         Path("./data/processed/y.parquet"), "--labels-path", help="labels"
     ),
-    outcome: str = typer.Option("injury", "--outcome", help="outcome column"),
+    outcome: str = typer.Option("injury_or_fatal", "--outcome", help="outcome column"),
     group_col: str = typer.Option("vru", "--group-col", help="subgroup column"),
     group_value: int = typer.Option(1, "--group-value", help="value denoting group"),
     primary_key: str = typer.Option(

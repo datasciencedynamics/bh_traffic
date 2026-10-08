@@ -100,7 +100,28 @@ shap_run_name = "explainer"
 shap_artifacts_data = "./mlruns/explainer"
 
 
+## Columns that encode the outcome or BHPD's reporting rule rather than the
+## crash itself. Dropped in feat_gen.py before X_columns_list is saved, so
+## inference inherits the same exclusion. Missing names are ignored.
+leak_cols = [
+    ## Report tags parsed from Accident Type, the same field as the label.
+    ## Non-injury reports are filed mostly for these cases, so the tags
+    ## proxy the reporting rule (three flags alone reach AUC ~0.89)
+    "hit_run",  # hit and run
+    "dui",  # driving under the influence
+    "cpd",  # city property damage
+    ## Vehicle code sections whose legal definition depends on injury
+    "pcf_section_23152",  # DUI (duplicates the dui tag, r = 0.79)
+    "pcf_section_23153",  # DUI causing bodily injury (injury by definition)
+    "pcf_section_20001",  # hit and run with injury or death (injury by definition)
+    "pcf_section_20002",  # hit and run, property damage only (non-injury by definition)
+    ## Officer-coded cause levels that duplicate the dui tag
+    "other_imp_drive_dui",  # r = 0.76 with the dui tag
+    "other_imp_drive_driving_under_influence_of_alcohol_42104",  # DUI variant
+]
+
 ################################################################################
 ############################### Target Outcome #################################
 
-target_outcome = ["injury"]
+target_outcome = ["injury_or_fatal"]
+

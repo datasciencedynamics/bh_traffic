@@ -40,7 +40,7 @@ def main(
     # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ---
     model_type: str = "lr",
     pipeline_type: str = "orig",
-    outcome: str = "injury",
+    outcome: str = "injury_or_fatal",
     features_path: Path = PROCESSED_DATA_DIR / "X.parquet",
     labels_path: Path = PROCESSED_DATA_DIR / "y.parquet",
     scoring: str = "average_precision",

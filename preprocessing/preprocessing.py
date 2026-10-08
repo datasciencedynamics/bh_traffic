@@ -16,6 +16,7 @@ from model_tuner.pickleObjects import dumpObjects
 
 from core.constants import (
     var_index,
+    accident_number,
     rename_map,
     date_var,
     time_var,
@@ -52,7 +53,6 @@ def _norm_text(series):
 def _slug(level):
     """Column-safe suffix for a one-hot level."""
     return re.sub(r"[^0-9a-z]+", "_", str(level).lower()).strip("_") or "blank"
-
 
 @app.command()
 def main(
@@ -102,6 +102,17 @@ def main(
 
     if stage == "training":
 
+        ########################################################################
+        # Step 2a. Drop Duplicate Accident Reports
+        ########################################################################
+        # 48 report numbers appear twice. Twins share the same outcome, so a
+        # random split could place one copy in train and the other in test.
+        # Keep the first occurrence.
+        ########################################################################
+        n_before = len(df)
+        df = df[~df[accident_number].duplicated(keep="first")]
+        print(f"\nDropped {n_before - len(df)} duplicate accident reports.")
+
         df_object = df.select_dtypes(["object", "string"])
         print()
         print(
@@ -113,7 +124,6 @@ def main(
             f"There are {df_object.shape[1]} string columns:\n \n"
             f"{df_object.columns.to_list()}. \n "
         )
-
         ########################################################################
         # Step 3. String Columns Handling
         ########################################################################
@@ -361,6 +371,9 @@ def main(
         accident_type_var,
         date_var,
         time_var,
+        "hit_run",
+        "dui",
+        "cpd",
         "location",
         "from_street",
         "day_of_week",

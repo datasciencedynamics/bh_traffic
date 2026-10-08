@@ -14,6 +14,7 @@ from core.constants import (
     exp_artifact_name,
     preproc_run_name,
     target_outcome,
+    leak_cols,
 )
 
 ################################################################################
@@ -90,6 +91,12 @@ def main(
         cols_to_keep = X.select_dtypes(include=np.number).columns.tolist()
 
         X = X[cols_to_keep]
+
+        ## Drop columns that encode the reporting rule (hit-and-run, DUI, CPD)
+        ## and their duplicates; done before X_columns_list so inference
+        ## inherits the same exclusion
+        X = X.drop(columns=leak_cols, errors="ignore")
+        print(f"\nDropped leakage columns: {[c for c in leak_cols if c in df.columns]}")
 
         ## Display class balance
         print(f"\nBreakdown of y:\n{y.value_counts()}\n")

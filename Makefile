@@ -27,8 +27,8 @@ PRETRAINED ?= 0  # 0 if you want to train the models, 1 if calibrate pretrained
 ############################# Production Globals ###############################
 
 # Model outcome variable used in production 
-EXPLAN_OUTCOME = injury # explainer outcome variable
-PROD_OUTCOME = injury # production outcome variable
+EXPLAN_OUTCOME = injury_or_fatal # explainer outcome variable
+PROD_OUTCOME = injury_or_fatal # production outcome variable
 
 
 # ------------------------------------------------------------------------------
