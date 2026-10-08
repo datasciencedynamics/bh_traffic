@@ -17,6 +17,8 @@ from model_tuner.pickleObjects import dumpObjects
 from core.constants import (
     var_index,
     accident_number,
+    location_key_var,
+    street_suffixes,
     rename_map,
     date_var,
     time_var,
@@ -53,6 +55,56 @@ def _norm_text(series):
 def _slug(level):
     """Column-safe suffix for a one-hot level."""
     return re.sub(r"[^0-9a-z]+", "_", str(level).lower()).strip("_") or "blank"
+
+
+def _norm_street(series):
+    """Street name without house number, direction prefix, or suffix variants.
+
+    "8670 WILSHIRE BL" -> "WILSHIRE BLVD"; "N Beverly Dr." -> "BEVERLY DR".
+    N/S prefixes are dropped so both halves of a street crossing the city's
+    north/south divide map to one intersection.
+
+    Exception: North and South Santa Monica Blvd are two separate parallel
+    roads, so their direction is kept ("N SANTA MONICA BLVD",
+    "S SANTA MONICA BLVD"). Records naming Santa Monica without a direction
+    stay "SANTA MONICA BLVD" and form their own keys.
+    """
+    s = _norm_text(series).str.replace(".", "", regex=False).str.strip()
+    s = s.str.replace(r"^\d+\s+", "", regex=True)
+
+    direction = s.str.extract(r"^(N|S|E|W|NORTH|SOUTH|EAST|WEST)\s+")[0].str[0]
+    s = s.str.replace(r"^(N|S|E|W|NORTH|SOUTH|EAST|WEST)\s+", "", regex=True)
+    for pattern, repl in street_suffixes.items():
+        s = s.str.replace(pattern, repl, regex=True)
+    s = s.str.strip()
+
+    santa_monica = s.str.startswith("SANTA MONICA").fillna(False)
+    sm_dir = direction.where(direction.isin(["N", "S"]), "").fillna("")
+    s = s.mask(santa_monica, (sm_dir + " SANTA MONICA BLVD").str.strip())
+    return s.replace("", pd.NA)
+
+
+def _location_key(location, from_street):
+    """Intersection key, order-independent: "SANTA MONICA BLVD / WILSHIRE BLVD".
+
+    Location "A / B" is an intersection. A mid-block address uses From Street
+    (the nearest cross street) when recorded; otherwise the street alone with
+    a "(MIDBLOCK)" suffix.
+    """
+    parts = location.astype("string").str.split("/")
+    primary = _norm_street(parts.str[0])
+    cross = _norm_street(parts.str[1]).fillna(_norm_street(from_street))
+
+    keys = []
+    for a, b in zip(primary, cross):
+        if pd.isna(a):
+            keys.append(pd.NA)
+        elif pd.isna(b) or a == b:
+            keys.append(f"{a} (MIDBLOCK)")
+        else:
+            keys.append(" / ".join(sorted([a, b])))
+    return pd.Series(keys, index=location.index, dtype="string")
+
 
 @app.command()
 def main(
@@ -210,6 +262,8 @@ def main(
     #   rush-hour flags.
     # - Location "A / B" is an intersection; "8670 WILSHIRE BLVD" is mid-block.
     #   The primary street (house number stripped) becomes a categorical.
+    #   The full intersection (or nearest cross street) becomes location_key,
+    #   a string used only by the hotspot panel.
     # - PCF VC -> vehicle code section (e.g., "22350 VC-I" -> "22350").
     # - Party fields -> pedestrian / bicycle / motorcycle flags and the
     #   vulnerable road user (VRU) flag used for stratification and audit.
@@ -297,6 +351,10 @@ def main(
         .replace("", pd.NA)
     )
     df["feet_from"] = df["feet_from"].fillna(0)
+
+    ## Intersection key for the hotspot panel (panel_gen.py). Kept as a string
+    ## so feat_gen.py, which retains numeric columns only, leaves it out of X.
+    df[location_key_var] = _location_key(df["location"], df["from_street"])
 
     df["pcf_section"] = _norm_text(df["pcf_vc"]).str.extract(r"^(\d+)")[0]
 

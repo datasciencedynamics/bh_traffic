@@ -47,6 +47,66 @@ from core.constants import (
 # ########################## Cleaning DataFrames ###############################
 ################################################################################
 
+
+def clean_dataframe(df, cols_with_thousand_separators=None):
+    """
+    Cleans a pandas DataFrame by replacing specific values with NaN, optionally
+    removing thousand separators, and converting columns to numeric types.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The DataFrame to be cleaned.
+
+    cols_with_thousand_separators : list of str, optional
+        A list of column names that contain thousand separators and need to be
+        processed. If None, this step is skipped.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The cleaned DataFrame.
+    """
+
+    # Step 1: Replace None and blank values with NaN
+    replacements = {
+        None: np.nan,
+        "": np.nan,
+        "-{2,}": np.nan,
+        "\.{2,}": np.nan,
+    }
+
+    for col in tqdm(df.columns, desc="Replacing values in columns"):
+        for to_replace, value in replacements.items():
+            if to_replace is None:
+                df[col] = df[col].map(lambda x: value if x is to_replace else x)
+            else:
+                df[col] = df[col].replace(to_replace, value, regex=True)
+
+    # Step 2: Remove thousand separators and convert to numeric if specified
+    if cols_with_thousand_separators:
+        desc_text = "Processing columns with thousand separators"
+        for col in tqdm(cols_with_thousand_separators, desc=desc_text):
+            if col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].str.replace(",", "", regex=False)
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Step 3: Convert all other columns to numeric if possible
+    for col in tqdm(df.columns, desc="Converting columns to numeric"):
+        if (
+            not cols_with_thousand_separators
+            or col not in cols_with_thousand_separators
+        ):
+            try:
+                df[col] = pd.to_numeric(df[col])
+            except (ValueError, TypeError):
+                # If conversion fails, keep the column as is
+                pass
+
+    return df
+
+
 def clean_feature_selection_params(pipeline_steps, tuned_parameters):
     """
     Remove feature selection parameters from tuned_parameters if RFE is not in
@@ -1905,36 +1965,3 @@ def return_best_model(outcome, metric, mlruns_location=None, databricks=False):
         )
 
     return best_model
-
-################################################################################
-######################### Concentration (Lorenz) Helpers #######################
-################################################################################
-
-
-def lorenz(ranked_by, scored_on):
-    """Cumulative share of `scored_on` captured as locations are added in
-    descending order of `ranked_by`. Ties broken by location name."""
-    order = (
-        ranked_by.rename("r")
-        .to_frame()
-        .assign(k=ranked_by.index)
-        .sort_values(["r", "k"], ascending=[False, True])
-        .index
-    )
-    y = scored_on.reindex(order, fill_value=0)
-    return pd.DataFrame(
-        {
-            "location_share": np.arange(1, len(y) + 1) / len(y),
-            "crash_share": y.cumsum().to_numpy() / y.sum(),
-        }
-    )
-
-
-def share_at(curve, q):
-    """Crash share captured by the top `q` fraction of locations."""
-    return float(np.interp(q, curve["location_share"], curve["crash_share"]))
-
-
-def locations_for(curve, target=0.8):
-    """Smallest location share whose crashes reach `target`."""
-    return float(curve.loc[curve["crash_share"] >= target, "location_share"].iloc[0])

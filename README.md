@@ -4,16 +4,21 @@
 
 # Beverly Hills Collision Injury or Fatality Prediction
 
-Machine learning pipeline for predicting whether a reported traffic collision
-in Beverly Hills results in injury or death, using the Beverly Hills Police
-Department (BHPD) Traffic Bureau collision records published on the City of
-Beverly Hills Open Data portal (records since January 1, 2015).
+Machine learning pipeline built on the Beverly Hills Police Department (BHPD)
+Traffic Bureau collision records published on the City of Beverly Hills Open
+Data portal (records since January 1, 2015). Two analyses share one
+preprocessing stage:
 
-The project trains four classifiers (logistic regression, random forest,
-XGBoost, CatBoost), evaluates them under a common protocol, and audits model
-behavior for vulnerable road users (pedestrians, bicyclists, motorcyclists and
-scooter riders) versus vehicle-only collisions, including an ablation that
-removes every "who was involved" feature from the model.
+1. **Severity classifier.** Whether a reported collision results in injury or
+   death. Four classifiers (logistic regression, random forest, XGBoost,
+   CatBoost) under a common protocol, with an audit for vulnerable road users
+   (pedestrians, bicyclists, motorcyclists and scooter riders) and an ablation
+   that removes every "who was involved" feature.
+2. **Hotspot screening.** Where injury-or-fatal crashes concentrate. A
+   location x month panel, Poisson count models on a temporal split, and
+   Empirical Bayes network screening with a backtest, producing a ranked
+   table of intersections for all injury crashes and for crashes involving
+   vulnerable road users. See [Hotspot screening](#hotspot-screening).
 
 ---
 
@@ -102,6 +107,174 @@ discrimination falls to roughly 0.68 AUC.
 
 ---
 
+## Hotspot screening
+
+### Panel
+
+`preprocessing.py` builds a `location_key` for every crash: the two streets of
+an intersection in alphabetical order (`LA CIENEGA BLVD / WILSHIRE BLVD`), or,
+for a mid-block address, the street and its recorded nearest cross street. A
+mid-block address with no cross street becomes `<STREET> (MIDBLOCK)`. House
+numbers, suffix variants (`BL`, `BLVD`), and N/S prefixes are normalized, with
+one exception: North and South Santa Monica Blvd are separate parallel roads,
+so their direction is kept.
+
+`panel_gen.py` keeps locations with at least 5 crashes through 2022 (252
+locations, 83.5% of injury-or-fatal crashes) and counts, per location and
+month, injury-or-fatal crashes (`inj_count`) and those involving a vulnerable
+road user (`vru_inj_count`).
+
+Every feature for month *t* uses crashes through *t* - 12 only: the same month
+last year, 12- and 24-month rolling sums, the long-run monthly rate, the
+citywide 12-month trend, calendar terms, and mid-block and corridor flags. A
+forecast for any of the next 12 months is therefore built from data already
+on record, and the test period is scored at the horizon the forecast is used
+at.
+
+| Split | Months |
+|---|---|
+| Train | 2017-01 to 2022-12 |
+| Valid | 2023 |
+| Test | 2024-01 to the last month on record |
+| Forecast | The next 12 months |
+
+### Count models
+
+`train_counts.py` fits a Poisson GLM (`pr`), XGBoost (`count:poisson`), and
+CatBoost (`Poisson`) through `model_tuner` in regression mode, passing the
+temporal split as `custom_splits` and tuning on `neg_mean_poisson_deviance`.
+`evaluation_counts.py` scores each against two baselines computed from the
+same lagged history: the long-run monthly rate and the last 12 months.
+
+Test period, `inj_count`:
+
+| Model | Poisson deviance | MAE | Predicted / observed |
+|---|---|---|---|
+| CatBoost | 0.493 | 0.201 | 0.96 |
+| XGBoost | 0.494 | 0.201 | 0.98 |
+| Poisson GLM | 0.501 | 0.211 | 1.06 |
+| History rate | 0.499 | 0.213 | 1.14 |
+
+The models are well calibrated, where the history rate overpredicts by 14%
+because crash counts have declined. Their gain in deviance over the history
+rate is small.
+
+Each evaluation also writes, to `models/eval/<count outcome>/` and to MLflow:
+
+| File | Shows |
+|---|---|
+| `<model>_orig_<outcome>_test_location_calibration.png` | Predicted vs observed test-period crashes per location |
+| `<model>_orig_<outcome>_test_lorenz.png` | Lorenz curves on the test period: the model, both baselines, and perfect foresight |
+| `<model>_orig_<outcome>_test_shap_beeswarm.png` | SHAP beeswarm, top 15 features |
+| `<model>_orig_shap_importance.csv` | Mean absolute SHAP for every feature |
+
+SHAP values explain the log of the expected count (the Poisson link), so
+they add on the log scale and exponentiate to multiplicative effects: +0.4
+means about 1.5 times the expected crashes. XGBoost uses its native TreeSHAP
+(`pred_contribs`), because shap's `TreeExplainer` cannot read the
+`base_score` format of XGBoost 2.1 and later; CatBoost uses `TreeExplainer`
+and the Poisson GLM `LinearExplainer`. For all three, the long-run injury and
+crash rates at the location dominate, followed by corridor (Olympic, Santa
+Monica, Canon, Rodeo), mid-block (lower), and the citywide trend.
+
+The test-period Lorenz curve sums one prediction per month over the whole
+test period, which turns the last-12-months baseline into a moving multi-year
+average; it ties the models there. The cutoff backtest below is the test of
+ranking as the city would use it.
+
+### Empirical Bayes ranking
+
+`hotspots.py` ranks locations by the Highway Safety Manual Empirical Bayes
+(EB) estimate. A safety performance function (Poisson GLM on mid-block and
+corridor flags) gives the expected count for a location of its type; EB blends
+it with the location's own last 60 months:
+
+    w  = 1 / (1 + alpha * SPF)
+    EB = w * SPF + (1 - w) * observed
+
+with negative binomial overdispersion *alpha* estimated by moments. EB pulls a
+location with one unusual year back toward its type. `excess_inj_per_year`
+(EB minus SPF) is the HSM potential for safety improvement.
+
+### Backtest
+
+At each cutoff, locations are ranked with data through the cutoff only and
+scored on the next 12 months (`inj_count`, Spearman correlation between the
+ranking and observed counts):
+
+| Ranking | 2022-12 | 2023-12 | 2024-12 |
+|---|---|---|---|
+| Observed, last 12 months | 0.44 | 0.51 | 0.45 |
+| Observed, last 36 months | 0.55 | 0.61 | 0.53 |
+| Observed, last 60 months | 0.60 | 0.63 | 0.58 |
+| Empirical Bayes (60 months) | 0.62 | 0.63 | 0.57 |
+| ML forecast (best count model) | 0.66* | 0.61 | 0.57 |
+
+\* validation period, used for early stopping and model selection.
+
+Ranking by last year's crashes, the common practice, is the weakest option.
+Five years of history, with or without EB, is consistently better. The ML
+forecast matches EB but does not beat it out of sample, so the table is ranked
+by EB, the method traffic engineers already recognize, and the ML forecast is
+reported alongside it. The top 10 locations capture 12 to 15% of next-year
+injury crashes against 18 to 19% with perfect foresight: year-to-year noise at
+a single intersection is large.
+
+VRU rankings are weaker (Spearman 0.33 to 0.39): injury crashes involving a
+pedestrian, cyclist, or motorcyclist are rare and scattered.
+
+### Concentration: is it 80/20?
+
+Hypothesis: a small set of intersections, identifiable from past crashes,
+accounts for a disproportionate and persistent share of future injury
+crashes. `hotspots.py` tests it three ways (top 20% of locations):
+
+| Test | All injury | Pedestrian, cyclist, motorcyclist |
+|---|---|---|
+| In-sample, citywide (naive): top 20% of 1,377 locations | 86% | 90% |
+| Out-of-sample, panel: top 20% of 252 by crashes through 2022, share of 2023 onward | 44% | 47% |
+| Same, with perfect foresight | 50% | 64% |
+| Out-of-sample, citywide: those 50 locations (4.5% of all) vs every later injury crash | 36% | 39% |
+
+The naive view clears 80/20 easily, but it is inflated twice: ranking and
+scoring on the same years rewards one bad year, and hundreds of one-off
+locations pad the denominator. Out of sample, among established
+intersections, it is closer to 20/45, within a few points of perfect
+foresight for all injury crashes. The defensible claim: about 4.5% of crash
+locations, chosen from history alone, account for about a third of the next
+three and a half years of injury crashes citywide.
+
+Outputs: `concentration_through_<month>.csv`, `lorenz_through_<month>.csv`,
+and `lorenz_through_<month>.png` (Lorenz curves, ranked by past crashes vs
+perfect foresight).
+
+### Output
+
+`data/processed/hotspots/hotspots_through_<month>.csv`, one row per location,
+ranked by `eb_inj_per_year`:
+
+| Column | Meaning |
+|---|---|
+| `eb_inj_per_year` | EB expected injury-or-fatal crashes per year |
+| `spf_inj_per_year` | Expected for a location of this type |
+| `excess_inj_per_year` | EB minus SPF (potential for safety improvement) |
+| `obs_inj_last12`, `obs_inj_last60` | Observed counts |
+| `ml_inj_next12` | ML forecast, next 12 months |
+| `vru_rank`, `*_vru_inj_*` | The same for VRU injury crashes |
+
+### Hotspot limitations
+
+- No traffic or pedestrian volume. The SPF knows location type only, so EB
+  ranks expected crash frequency, not risk per vehicle or pedestrian. Volume
+  (for example, city traffic counts) would sharpen the SPF and enable rates.
+- The location set is fixed by crashes through 2022; a location that became
+  dangerous later is absent until the threshold or train window changes.
+- About 9% of Santa Monica Blvd records give no North/South direction and form
+  their own keys.
+- Mid-block crashes without a cross street are grouped by street.
+
+---
+
 ## Requirements
 
 - Python 3.12
@@ -126,10 +299,19 @@ make requirements
 ## Quick start
 
 ```bash
-make create_folders          # scaffold data/, models/, notebooks/
-make preproc_train_eval      # full pipeline: preprocess -> train -> evaluate
+make full_pipeline           # folders -> preprocessing -> classifier -> hotspots
 make mlflow_ui               # inspect runs at http://localhost:5501
 ```
+
+| Target | Does |
+|---|---|
+| `full_pipeline` | `create_folders`, `preproc_pipeline`, `train_eval_pipeline`, `hotspot_pipeline`, in order |
+| `full_pipeline_stability` | `full_pipeline`, then `did_stability` (slow) |
+| `clean_results` | Deletes `mlruns/`, `models/`, `data/processed/`; keeps `data/raw/` |
+| `rerun_all` | `clean_results`, then `full_pipeline` |
+
+Pass a differently named raw file with
+`make full_pipeline RAW_DATA=$(pwd)/data/raw/<file>.csv`.
 
 ---
 
@@ -146,16 +328,21 @@ bh_traffic/
 │   ├── raw/                     # source CSV (not tracked)
 │   ├── interim/
 │   ├── processed/               # parquet artifacts + logs
+│   │   ├── hotspots/            # ranked hotspot table + backtest
 │   │   └── inference/
 │   └── external/
 ├── modeling/
-│   ├── train.py                 # model training + hyperparameter search
-│   ├── evaluation.py            # held-out evaluation, calibration, metrics
-│   └── did_stability.py         # stability of the VRU AUC gap under ablation
+│   ├── train.py                 # classifier training + hyperparameter search
+│   ├── evaluation.py            # classifier evaluation, calibration, metrics
+│   ├── did_stability.py         # stability of the VRU AUC gap under ablation
+│   ├── train_counts.py          # Poisson count models on the temporal split
+│   ├── evaluation_counts.py     # count models vs naive baselines
+│   └── hotspots.py              # Empirical Bayes screening, backtest, ranked table
 ├── preprocessing/
 │   ├── data_gen.py              # raw CSV -> df.parquet
 │   ├── preprocessing.py         # cleaning, dedup, realignment, features, encoding
-│   └── feat_gen.py              # leakage removal -> X.parquet, y.parquet
+│   ├── feat_gen.py              # leakage removal -> X.parquet, y.parquet
+│   └── panel_gen.py             # location x month panel -> X_counts, y_counts
 ├── notebooks/
 ├── models/
 │   ├── results/<outcome>/       # training logs per model + pipeline
@@ -291,6 +478,18 @@ through the cause fields.
 and reports whether removing party features changes the VRU minus non-VRU ROC
 AUC gap consistently, or only on the original partition.
 
+### Hotspot count models
+
+| Target | Does |
+|---|---|
+| `panel_gen` | `df_sans_zero.parquet` -> `panel.parquet`, `X_counts.parquet`, `y_counts.parquet`, `X_counts_forecast.parquet` |
+| `train_count_models` | Loops `COUNT_OUTCOMES` x `COUNT_MODELS` (`pr`, `xgb`, `cat`) |
+| `eval_count_models` | Each count model vs the history-rate and last-12-months baselines |
+| `hotspots` | Backtest of rankings, then `data/processed/hotspots/hotspots_through_<month>.csv` |
+| `hotspot_pipeline` | All four, in order (run after `preproc_pipeline`) |
+
+Logs land in `models/results/<count outcome>/` and `models/eval/<count outcome>/`.
+
 ### Explainability, inference, composite pipelines
 
 | Target | Does |
@@ -317,8 +516,9 @@ AUC gap consistently, or only on the original partition.
 ```bash
 make create_folders
 make preproc_pipeline
-make train_eval_pipeline
+make train_eval_pipeline     # severity classifier
 make did_stability
+make hotspot_pipeline        # hotspot screening
 ```
 
 ---
@@ -333,6 +533,7 @@ make did_stability
 - Injury prevalence drops from about 0.67 to about 0.60 in 2025 and 2026,
   coinciding with the batch of shuffled fields; it may reflect a change in
   reporting practice.
+- Coverage runs through June 2026 as of this export.
 
 ---
 

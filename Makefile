@@ -19,10 +19,17 @@ CSV_BACKUP     ?= --no-csv-backup
 ############################## Training Globals ################################
 
 # Define variables for looping
-OUTCOMES = injury
+OUTCOMES = injury_or_fatal
 PIPELINES = orig 
 SCORING = average_precision
 PRETRAINED ?= 0  # 0 if you want to train the models, 1 if calibrate pretrained
+
+########################### Hotspot Count Globals ##############################
+
+# Monthly crash counts per location (preprocessing/panel_gen.py)
+COUNT_OUTCOMES = inj_count vru_inj_count
+COUNT_MODELS = pr xgb cat
+COUNT_SCORING = neg_mean_poisson_deviance
 
 ############################# Production Globals ###############################
 
@@ -172,10 +179,11 @@ create_folders:
 	touch core/__init__.py
 
 # Create models subdirectories for each outcome
-	@for outcome in $(OUTCOMES); do \
+	@for outcome in $(OUTCOMES) $(COUNT_OUTCOMES); do \
 		mkdir -p models/results/$$outcome; \
 		mkdir -p models/eval/$$outcome; \
 	done
+	mkdir -p data/processed/hotspots
 
 .PHONY: data_gen
 data_gen: $(PROCESSED_DATA)
@@ -344,6 +352,7 @@ eval_catboost:
 	done
 
 ## Party-ablated CatBoost: retrain and evaluate without who-was-involved features
+.PHONY: cat_no_party
 cat_no_party:
 	$(MAKE) train_catboost PIPELINES=orig_no_party
 	$(MAKE) eval_catboost PIPELINES=orig_no_party
@@ -361,6 +370,101 @@ train_eval_pipeline: train_all_models eval_all_models cat_no_party
 
 preproc_train_eval: preproc_pipeline train_all_models eval_all_models cat_no_party
 
+
+################################################################################
+######################## Hotspot Count Models (Panel) ##########################
+################################################################################
+# Location x month panel of injury-or-fatal crash counts, Poisson count models
+# on a temporal split, and Empirical Bayes hotspot screening with a backtest.
+
+## Build the location x month panel from df_sans_zero.parquet
+.PHONY: panel_gen
+panel_gen:
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/preprocessing/panel_gen.py \
+		--input-data-file ./data/processed/df_sans_zero.parquet \
+		--data-path ./data/processed \
+	2>&1 | tee data/processed/panel_gen.txt
+
+## Train every count model for every count outcome
+.PHONY: train_count_models
+train_count_models:
+	@for outcome in $(COUNT_OUTCOMES); do \
+		for model in $(COUNT_MODELS); do \
+			mkdir -p models/results/$$outcome; \
+			$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/train_counts.py \
+				--model-type "$$model" \
+				--outcome "$$outcome" \
+				--features-path ./data/processed/X_counts.parquet \
+				--labels-path ./data/processed/y_counts.parquet \
+				--panel-path ./data/processed/panel.parquet \
+				--scoring "$(COUNT_SCORING)" \
+				--pretrained "$(PRETRAINED)" \
+				2>&1 | tee models/results/$$outcome/$${model}_orig$$( [ "$(PRETRAINED)" -eq 1 ] && echo "_prefit" ).txt; \
+		done; \
+	done
+
+## Evaluate every count model against naive baselines
+.PHONY: eval_count_models
+eval_count_models:
+	@for outcome in $(COUNT_OUTCOMES); do \
+		for model in $(COUNT_MODELS); do \
+			mkdir -p models/eval/$$outcome; \
+			$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/evaluation_counts.py \
+				--model-type "$$model" \
+				--outcome "$$outcome" \
+				--features-path ./data/processed/X_counts.parquet \
+				--labels-path ./data/processed/y_counts.parquet \
+				--panel-path ./data/processed/panel.parquet \
+				2>&1 | tee models/eval/$$outcome/$${model}_eval_orig.txt; \
+		done; \
+	done
+
+## Backtest rankings, concentration test, and the ranked hotspot table
+.PHONY: hotspots
+hotspots:
+	@mkdir -p data/processed/hotspots
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/hotspots.py \
+		--panel-path ./data/processed/panel.parquet \
+		--features-path ./data/processed/X_counts.parquet \
+		--labels-path ./data/processed/y_counts.parquet \
+		--forecast-path ./data/processed/X_counts_forecast.parquet \
+		--crash-path ./data/processed/df_sans_zero.parquet \
+		--out-dir ./data/processed/hotspots \
+	2>&1 | tee data/processed/hotspots/hotspots.txt
+
+## Panel, count models, evaluation, and hotspot table in one command
+.PHONY: hotspot_pipeline
+hotspot_pipeline: panel_gen train_count_models eval_count_models hotspots
+
+################################################################################
+############################## Master Pipeline #################################
+################################################################################
+# Everything from raw CSV to hotspot table, in order. Recursive $(MAKE) calls
+# keep the stages sequential even under `make -j`. did_stability (slow,
+# optional) and mlflow_ui (a server that never exits) are left out.
+
+## Full run: folders, preprocessing, severity classifier, hotspot screening
+.PHONY: full_pipeline
+full_pipeline:
+	$(MAKE) create_folders
+	$(MAKE) preproc_pipeline
+	$(MAKE) train_eval_pipeline
+	$(MAKE) hotspot_pipeline
+
+## Full run plus the DiD stability analysis (slow)
+.PHONY: full_pipeline_stability
+full_pipeline_stability: full_pipeline
+	$(MAKE) did_stability
+
+## Delete all results (mlruns, models, data/processed); keeps data/raw
+.PHONY: clean_results
+clean_results:
+	rm -rf mlruns models data/processed
+
+## Clean rerun from raw CSV: clean_results, then full_pipeline
+.PHONY: rerun_all
+rerun_all: clean_results
+	$(MAKE) full_pipeline
 
 ################################################################################
 #################### Best Model Explainer and Explanations #####################

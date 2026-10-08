@@ -105,24 +105,13 @@ shap_artifacts_data = "./mlruns/explainer"
 
 target_outcome = ["injury_or_fatal"]
 
-## Columns that encode the outcome or BHPD's reporting rule rather than the
-## crash itself. Dropped in feat_gen.py before X_columns_list is saved, so
-## inference inherits the same exclusion. Missing names are ignored.
 leak_cols = [
-    ## Report tags parsed from Accident Type, the same field as the label.
-    ## Non-injury reports are filed mostly for these cases, so the tags
-    ## proxy the reporting rule (three flags alone reach AUC ~0.89)
-    "hit_run",  # hit and run
-    "dui",  # driving under the influence
-    "cpd",  # city property damage
-    ## Vehicle code sections whose legal definition depends on injury
-    "pcf_section_23152",  # DUI (duplicates the dui tag, r = 0.79)
-    "pcf_section_23153",  # DUI causing bodily injury (injury by definition)
-    "pcf_section_20001",  # hit and run with injury or death (injury by definition)
-    "pcf_section_20002",  # hit and run, property damage only (non-injury by definition)
-    ## Officer-coded cause levels that duplicate the dui tag
-    "other_imp_drive_dui",  # r = 0.76 with the dui tag
-    "other_imp_drive_driving_under_influence_of_alcohol_42104",  # DUI variant
+    "hit_run",
+    "dui",
+    "cpd",
+    "pcf_section_23152",
+    "other_imp_drive_dui",
+    "other_imp_drive_driving_under_influence_of_alcohol_42104",
 ]
 
 
@@ -186,15 +175,3 @@ top_n_hotspots = 25
 
 ## Count-model MLflow artifact names
 panel_artifact_name = "X_counts_columns_list"
-
-## Concentration test: share of locations treated as "the top"
-concentration_share = 0.2
-
-## Chart colors (validated reference palette: CVD and normal-vision separation)
-plot_colors = {
-    "ink": "#0b0b0b",
-    "ink_2": "#52514e",
-    "grid": "#e4e3df",
-    "surface": "#fcfcfb",
-    "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"],
-}
