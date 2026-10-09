@@ -10,7 +10,7 @@ CONDA_ENV_NAME = conda_bh
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 PROJECT_DIRECTORY := $(abspath $(MAKEFILE_DIR))
 
-RAW_DATA       ?= $(PROJECT_DIRECTORY)/data/raw/CollisionRecords_BHPD_Since2015_d_-8252529495950865508.csv
+RAW_DATA       ?= $(PROJECT_DIRECTORY)/data/raw/bh_collisions.csv
 PROCESSED_DATA ?= $(PROJECT_DIRECTORY)/data/processed/df.parquet
 DATA_GEN_SCRIPT = $(PROJECT_DIRECTORY)/preprocessing/data_gen.py
 CSV_BACKUP     ?= --no-csv-backup
@@ -435,6 +435,50 @@ hotspots:
 ## Panel, count models, evaluation, and hotspot table in one command
 .PHONY: hotspot_pipeline
 hotspot_pipeline: panel_gen train_count_models eval_count_models hotspots
+
+################################################################################
+############################ Dash App Export ###################################
+################################################################################
+# Flat files for the Dash app in flask_apps/bh_traffic. Run after
+# hotspot_pipeline and train_eval_pipeline, then copy data/dash/* into
+# flask_apps/bh_traffic/data/. Coordinates come from OpenStreetMap on the
+# first run (internet needed) and are cached in data/external/.
+
+DASH_DIR ?= $(PROJECT_DIRECTORY)/data/dash
+FLASK_APP_DATA ?=
+
+## Write the Dash app's data files to data/dash (geocodes on first run)
+.PHONY: export_dash
+export_dash:
+	@mkdir -p $(DASH_DIR) data/external
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/export_dash.py \
+		--out-dir $(DASH_DIR) \
+	2>&1 | tee $(DASH_DIR)/export_dash.txt
+	@if [ -n "$(FLASK_APP_DATA)" ]; then \
+		mkdir -p "$(FLASK_APP_DATA)"; \
+		cp $(DASH_DIR)/*.csv $(DASH_DIR)/meta.json "$(FLASK_APP_DATA)"/; \
+		echo "Copied data files to $(FLASK_APP_DATA)"; \
+	fi
+
+## Re-download OSM street geometry and rebuild the coordinate cache
+.PHONY: refresh_coords
+refresh_coords:
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/export_dash.py \
+		--out-dir $(DASH_DIR) --refresh-coords
+
+## One-page PDF brief for city decision makers (data/brief); run after export_dash
+.PHONY: brief
+brief:
+	@mkdir -p $(PROJECT_DIRECTORY)/data/brief
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/brief_pdf.py \
+		--dash-dir $(DASH_DIR) --out-dir $(PROJECT_DIRECTORY)/data/brief
+
+## Pre-release check of every top-10 location (pins, spellings, flags); run after export_dash
+.PHONY: audit_top
+audit_top:
+	@mkdir -p $(PROJECT_DIRECTORY)/data/audit
+	$(PYTHON_INTERPRETER) $(PROJECT_DIRECTORY)/modeling/audit_top.py \
+		--dash-dir $(DASH_DIR) --out-dir $(PROJECT_DIRECTORY)/data/audit
 
 ################################################################################
 ############################## Master Pipeline #################################

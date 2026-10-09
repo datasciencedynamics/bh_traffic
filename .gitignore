@@ -154,3 +154,5 @@ images/
 --stdin*/
 /lib
 .data/
+.json/
+/cache/

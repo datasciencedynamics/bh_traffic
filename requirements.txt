@@ -12,5 +12,8 @@ nbstripout==0.9.1
 python-dotenv==1.2.2
 pytest==9.1.1
 pytest-cov==7.1.0
+reportlab==5.0.1
 shap==0.46.0
 typer==0.27.0
+osmnx==2.1.1
+reportlab==5.0.1

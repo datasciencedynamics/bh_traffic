@@ -275,6 +275,86 @@ ranked by `eb_inj_per_year`:
 
 ---
 
+## Dash app
+
+The interactive front end lives in the `flask_apps` repo (`bh_traffic/`). It
+reads only flat files exported from here:
+
+```bash
+make export_dash FLASK_APP_DATA=../flask_apps/bh_traffic/data
+```
+
+| Target | Does |
+|---|---|
+| `export_dash` | Writes the app's data files to `data/dash/` (and copies them to `FLASK_APP_DATA` if set) |
+| `refresh_coords` | Re-downloads OpenStreetMap street geometry and rebuilds the coordinate cache |
+| `audit_top` | Pre-release check of every top-10 location, to `data/audit/` |
+| `brief` | One-page PDF brief for decision makers, to `data/brief/` |
+
+`modeling/export_dash.py` writes the ranked hotspot table with coordinates,
+monthly history and the 12-month forecast per location, the backtest,
+concentration, and Lorenz files, count-model metrics, a SHAP sample,
+severity-classifier test predictions and MLflow metrics, the leakage
+audit (5-fold AUC with and without the reporting-rule columns), and crash
+profiles.
+
+### Crash profiles ("what stands out")
+
+`hotspot_profile.csv` describes the injury crashes at each location over the
+last 5 years (the EB window): BHPD collision type, primary collision factor,
+and whether a pedestrian, cyclist, or motorcyclist was involved, each with
+the citywide share for comparison. The primary collision factor is the
+California Vehicle Code section on the report, grouped roughly as SWITRS
+groups PCF violations (unsafe speed, left turn failing to yield, ran red
+light, ran stop sign, and so on); BHPD's free-text cause fills in when the
+code is missing (about 7% of injury crashes).
+
+A location's "what stands out" is the type or cause most over-represented
+there relative to the city, called out only with at least 4 crashes, at
+least 20% of the location's injury crashes, and at least 1.5x the citywide
+share. It is descriptive, with no significance test. This is what turns a
+rank into something actionable: Robertson & Wilshire is a left-turn problem
+(46% of injury crashes, 2.9x the city); Beverly Dr & Carmelita is stop-sign
+running (31%, 7.2x).
+
+### Before releasing: audit and brief
+
+```bash
+make export_dash
+make audit_top    # data/audit/top_locations_audit.{csv,html}
+make brief        # data/brief/bh_injury_hotspots_brief_<month>.pdf
+```
+
+`audit_top` lists every location in a top 10 under any ranking the app
+offers, with the raw BHPD spellings merged into it, how far from the corner
+the reports sit, its coordinates and their source, flags (no or approximate
+coordinates, a pin far from the city, mid-block keys, most reports 250+ ft
+from the corner), and two Google Maps links: the pin and an address search.
+They should land on the same corner. Fix a wrong pin in
+`data/external/location_coords_manual.csv` and re-export.
+
+`brief` writes a one-page PDF from the same exported files: the headline
+numbers, the top 10 with what stands out at each, the top 10 grouped by
+pattern with the countermeasures an engineer would usually review first
+(FHWA Proven Safety Countermeasures), the method, the limits, and the app
+link. Options: `--outcome` (inj_count, vru_inj_count), `--rank-by` (eb,
+excess, obs12, ml), `--top` (5 to 15), `--url`, `--contact`, `--no-logo`. The
+layout shrinks slightly when needed so the brief is always one page.
+
+The same module is copied into `flask_apps/bh_traffic/bh_brief.py`; the app's
+"PDF brief" button builds it from the current map settings. Keep the two copies
+identical.
+
+Coordinates come from the OpenStreetMap drive network (`osmnx`): every node
+where two named streets meet yields an intersection key, normalized with the
+same `_norm_street` as preprocessing, so it joins `location_key` directly.
+Mid-block keys take the mean of geocoded intersections on the same street and
+are flagged approximate. The first run needs internet; results are cached in
+`data/external/location_coords.csv`, and rows in
+`data/external/location_coords_manual.csv` (`location_key,lat,lon`) override.
+
+---
+
 ## Requirements
 
 - Python 3.12
@@ -337,7 +417,10 @@ bh_traffic/
 │   ├── did_stability.py         # stability of the VRU AUC gap under ablation
 │   ├── train_counts.py          # Poisson count models on the temporal split
 │   ├── evaluation_counts.py     # count models vs naive baselines
-│   └── hotspots.py              # Empirical Bayes screening, backtest, ranked table
+│   ├── hotspots.py              # Empirical Bayes screening, backtest, ranked table
+│   ├── export_dash.py           # flat files for the Dash app in flask_apps
+│   ├── audit_top.py             # pre-release check of top-ranked locations
+│   └── brief_pdf.py             # one-page PDF brief for decision makers
 ├── preprocessing/
 │   ├── data_gen.py              # raw CSV -> df.parquet
 │   ├── preprocessing.py         # cleaning, dedup, realignment, features, encoding
